@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Calendar as CalendarIcon, Plus, Filter, Tag, Clock } from "lucide-react";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 import { es } from "date-fns/locale";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -20,34 +21,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { ChevronDown } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import type { Database } from "@/lib/database.types";
 
 type Priority = "Alta" | "Media" | "Baja";
 type Category = "Frontend" | "Backend" | "Diseño" | "QA" | "DevOps";
-
-interface Task {
-  id: number;
-  title: string;
-  description: string;
-  done: boolean;
-  priority: Priority;
-  category: Category;
-  dueDate: Date | undefined;
-  assignee: string;
-}
-
-const initialTasks: Task[] = [
-  { id: 1, title: "Migrar base de datos a PostgreSQL", description: "Planificar y ejecutar la migración desde MySQL.", done: false, priority: "Alta", category: "Backend", dueDate: new Date(2025, 2, 20), assignee: "Carlos López" },
-  { id: 2, title: "Diseñar nueva landing page", description: "Crear mockups en Figma para la nueva landing.", done: false, priority: "Media", category: "Diseño", dueDate: new Date(2025, 2, 25), assignee: "María Torres" },
-  { id: 3, title: "Implementar autenticación OAuth", description: "Integrar Google y GitHub OAuth2.", done: true, priority: "Alta", category: "Backend", dueDate: new Date(2025, 2, 15), assignee: "Carlos López" },
-  { id: 4, title: "Crear tests E2E para checkout", description: "Cubrir el flujo completo de compra con Playwright.", done: false, priority: "Alta", category: "QA", dueDate: new Date(2025, 2, 28), assignee: "Sara Ruiz" },
-  { id: 5, title: "Optimizar bundle de Webpack", description: "Reducir el tamaño del bundle en al menos un 20%.", done: false, priority: "Media", category: "Frontend", dueDate: new Date(2025, 3, 1), assignee: "Luis Pérez" },
-  { id: 6, title: "Configurar CI/CD en GitHub Actions", description: "Pipeline para staging y producción.", done: true, priority: "Media", category: "DevOps", dueDate: new Date(2025, 2, 10), assignee: "David Kim" },
-  { id: 7, title: "Refactorizar componentes de formulario", description: "Unificar uso de react-hook-form.", done: false, priority: "Baja", category: "Frontend", dueDate: new Date(2025, 3, 5), assignee: "Ana García" },
-  { id: 8, title: "Actualizar dependencias de seguridad", description: "Resolver vulnerabilidades detectadas por dependabot.", done: false, priority: "Alta", category: "DevOps", dueDate: new Date(2025, 2, 22), assignee: "David Kim" },
-];
+type Task = Database["public"]["Tables"]["tasks"]["Row"];
+type Member = Pick<Database["public"]["Tables"]["members"]["Row"], "id" | "name">;
 
 const categories: Category[] = ["Frontend", "Backend", "Diseño", "QA", "DevOps"];
-const assignees = ["Ana García", "Carlos López", "María Torres", "Luis Pérez", "Sara Ruiz", "David Kim"];
 
 const priorityColor: Record<Priority, "destructive" | "default" | "secondary"> = {
   Alta: "destructive",
@@ -56,49 +38,71 @@ const priorityColor: Record<Priority, "destructive" | "default" | "secondary"> =
 };
 
 export default function TasksPage() {
-  const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [loading, setLoading] = useState(true);
   const [date, setDate] = useState<Date | undefined>(undefined);
   const [filterOpen, setFilterOpen] = useState(false);
   const [comboOpen, setComboOpen] = useState(false);
-  const [selectedAssignee, setSelectedAssignee] = useState("");
+  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [newTask, setNewTask] = useState("");
 
-  const toggleTask = (id: number) => {
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          toast(t.done ? "Tarea reabierta" : "Tarea completada ✓");
-          return { ...t, done: !t.done };
-        }
-        return t;
-      })
-    );
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  async function loadData() {
+    setLoading(true);
+    const [{ data: tasksData, error: tasksError }, { data: membersData }] = await Promise.all([
+      supabase.from("tasks").select("*").order("due_date", { ascending: true, nullsFirst: false }),
+      supabase.from("members").select("id, name").order("name"),
+    ]);
+    if (tasksError) toast.error("Error cargando tareas");
+    setTasks(tasksData ?? []);
+    setMembers(membersData ?? []);
+    setLoading(false);
+  }
+
+  const toggleTask = async (id: string) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    const { error } = await supabase.from("tasks").update({ done: !task.done }).eq("id", id);
+    if (error) { toast.error("Error al actualizar tarea"); return; }
+    setTasks((prev) => prev.map((t) => {
+      if (t.id === id) { toast(t.done ? "Tarea reabierta" : "Tarea completada ✓"); return { ...t, done: !t.done }; }
+      return t;
+    }));
   };
 
-  const addTask = () => {
+  const addTask = async () => {
     if (!newTask.trim()) return;
-    setTasks((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
+    const { data, error } = await supabase
+      .from("tasks")
+      .insert({
         title: newTask,
         description: "Sin descripción",
         done: false,
         priority: "Media",
         category: "Frontend",
-        dueDate: date,
-        assignee: selectedAssignee || "Sin asignar",
-      },
-    ]);
+        due_date: date ? format(date, "yyyy-MM-dd") : null,
+        assignee: selectedMember?.name ?? "Sin asignar",
+        member_id: selectedMember?.id ?? null,
+      })
+      .select()
+      .single();
+    if (error) { toast.error("Error al crear tarea"); return; }
+    setTasks((prev) => [...prev, data]);
     setNewTask("");
     setDate(undefined);
-    setSelectedAssignee("");
+    setSelectedMember(null);
     toast.success("Tarea creada exitosamente");
   };
 
   const pending = tasks.filter((t) => !t.done);
   const completed = tasks.filter((t) => t.done);
-  const byCategory = categories.map((c) => ({ category: c, tasks: pending.filter((t) => t.category === c) })).filter((g) => g.tasks.length > 0);
+  const byCategory = categories
+    .map((c) => ({ category: c, tasks: pending.filter((t) => t.category === c) }))
+    .filter((g) => g.tasks.length > 0);
 
   return (
     <div className="space-y-6">
@@ -135,10 +139,10 @@ export default function TasksPage() {
               </PopoverContent>
             </Popover>
 
-            {/* Combobox assignee */}
+            {/* Combobox assignee (desde members de BD) */}
             <Popover open={comboOpen} onOpenChange={setComboOpen}>
               <PopoverTrigger render={<Button variant="outline" className="gap-2" />}>
-                {selectedAssignee || "Asignar a..."}
+                {selectedMember?.name ?? "Asignar a..."}
               </PopoverTrigger>
               <PopoverContent className="w-52 p-0">
                 <Command>
@@ -146,13 +150,13 @@ export default function TasksPage() {
                   <CommandList>
                     <CommandEmpty>Sin resultados</CommandEmpty>
                     <CommandGroup>
-                      {assignees.map((a) => (
+                      {members.map((m) => (
                         <CommandItem
-                          key={a}
-                          value={a}
-                          onSelect={(v) => { setSelectedAssignee(v); setComboOpen(false); }}
+                          key={m.id}
+                          value={m.name}
+                          onSelect={() => { setSelectedMember(m); setComboOpen(false); }}
                         >
-                          {a}
+                          {m.name}
                         </CommandItem>
                       ))}
                     </CommandGroup>
@@ -177,7 +181,6 @@ export default function TasksPage() {
             <TabsTrigger value="calendario">Calendario</TabsTrigger>
           </TabsList>
 
-          {/* Filter collapsible */}
           <Collapsible open={filterOpen} onOpenChange={setFilterOpen}>
             <CollapsibleTrigger render={<Button variant="ghost" size="sm" className="gap-1" />}>
               <Filter className="size-4" /> Filtros
@@ -198,56 +201,59 @@ export default function TasksPage() {
         {/* Lista Tab */}
         <TabsContent value="lista" className="mt-4">
           <ScrollArea className="h-[400px]">
-            <div className="space-y-2 pr-2">
-              {pending.map((task) => (
-                <HoverCard key={task.id}>
-                  <HoverCardTrigger render={<div className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 cursor-default transition-colors" />}>
-                    <Checkbox
-                      checked={task.done}
-                      onCheckedChange={() => toggleTask(task.id)}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium">{task.title}</p>
-                      <p className="text-xs text-muted-foreground">{task.assignee}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={priorityColor[task.priority]} className="text-xs">{task.priority}</Badge>
-                      <Badge variant="outline" className="text-xs gap-1">
-                        <Tag className="size-3" />{task.category}
-                      </Badge>
-                      {task.dueDate && (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
-                          <Clock className="size-3" />{format(task.dueDate, "dd/MM")}
-                        </span>
-                      )}
-                    </div>
-                  </HoverCardTrigger>
-                  <HoverCardContent className="w-72">
-                    <div className="space-y-2">
-                      <h4 className="font-semibold text-sm">{task.title}</h4>
-                      <p className="text-xs text-muted-foreground">{task.description}</p>
-                      <Separator />
-                      <div className="flex justify-between text-xs">
-                        <span>Asignado a: <strong>{task.assignee}</strong></span>
-                        {task.dueDate && <span>Vence: <strong>{format(task.dueDate, "dd MMM", { locale: es })}</strong></span>}
-                      </div>
-                    </div>
-                  </HoverCardContent>
-                </HoverCard>
-              ))}
-              {completed.length > 0 && (
-                <>
-                  <Separator className="my-2" />
-                  <p className="text-xs text-muted-foreground px-1">Completadas ({completed.length})</p>
-                  {completed.map((task) => (
-                    <div key={task.id} className="flex items-center gap-3 p-3 rounded-lg border opacity-60">
+            {loading ? (
+              <div className="space-y-2 pr-2">
+                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-lg" />)}
+              </div>
+            ) : (
+              <div className="space-y-2 pr-2">
+                {pending.map((task) => (
+                  <HoverCard key={task.id}>
+                    <HoverCardTrigger render={<div className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 cursor-default transition-colors" />}>
                       <Checkbox checked={task.done} onCheckedChange={() => toggleTask(task.id)} />
-                      <p className="text-sm line-through text-muted-foreground">{task.title}</p>
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{task.title}</p>
+                        <p className="text-xs text-muted-foreground">{task.assignee}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={priorityColor[task.priority as Priority] ?? "secondary"} className="text-xs">{task.priority}</Badge>
+                        <Badge variant="outline" className="text-xs gap-1">
+                          <Tag className="size-3" />{task.category}
+                        </Badge>
+                        {task.due_date && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="size-3" />{format(parseISO(task.due_date), "dd/MM")}
+                          </span>
+                        )}
+                      </div>
+                    </HoverCardTrigger>
+                    <HoverCardContent className="w-72">
+                      <div className="space-y-2">
+                        <h4 className="font-semibold text-sm">{task.title}</h4>
+                        <p className="text-xs text-muted-foreground">{task.description}</p>
+                        <Separator />
+                        <div className="flex justify-between text-xs">
+                          <span>Asignado a: <strong>{task.assignee}</strong></span>
+                          {task.due_date && <span>Vence: <strong>{format(parseISO(task.due_date), "dd MMM", { locale: es })}</strong></span>}
+                        </div>
+                      </div>
+                    </HoverCardContent>
+                  </HoverCard>
+                ))}
+                {completed.length > 0 && (
+                  <>
+                    <Separator className="my-2" />
+                    <p className="text-xs text-muted-foreground px-1">Completadas ({completed.length})</p>
+                    {completed.map((task) => (
+                      <div key={task.id} className="flex items-center gap-3 p-3 rounded-lg border opacity-60">
+                        <Checkbox checked={task.done} onCheckedChange={() => toggleTask(task.id)} />
+                        <p className="text-sm line-through text-muted-foreground">{task.title}</p>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
           </ScrollArea>
         </TabsContent>
 
@@ -271,7 +277,7 @@ export default function TasksPage() {
                           <p className="text-sm">{task.title}</p>
                           <p className="text-xs text-muted-foreground">{task.assignee}</p>
                         </div>
-                        <Badge variant={priorityColor[task.priority]} className="text-xs">{task.priority}</Badge>
+                        <Badge variant={priorityColor[task.priority as Priority] ?? "secondary"} className="text-xs">{task.priority}</Badge>
                       </div>
                     ))}
                   </div>
@@ -297,12 +303,12 @@ export default function TasksPage() {
               </h3>
               {date
                 ? tasks
-                    .filter((t) => t.dueDate && format(t.dueDate, "yyyy-MM-dd") === format(date, "yyyy-MM-dd"))
+                    .filter((t) => t.due_date === format(date, "yyyy-MM-dd"))
                     .map((t) => (
                       <div key={t.id} className="flex items-center gap-2 p-2 rounded border mb-2">
                         <Checkbox checked={t.done} onCheckedChange={() => toggleTask(t.id)} />
                         <span className="text-sm">{t.title}</span>
-                        <Badge variant={priorityColor[t.priority]} className="ml-auto text-xs">{t.priority}</Badge>
+                        <Badge variant={priorityColor[t.priority as Priority] ?? "secondary"} className="ml-auto text-xs">{t.priority}</Badge>
                       </div>
                     ))
                 : <p className="text-muted-foreground text-sm">Haz clic en una fecha para ver las tareas programadas.</p>

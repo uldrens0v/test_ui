@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { MoreHorizontal, UserPlus, Search, Mail, Shield, Trash2, Edit, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -40,7 +41,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
   Sheet,
@@ -54,31 +54,15 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerFooter } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerFooter } from "@/components/ui/drawer";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
+import type { Database } from "@/lib/database.types";
 
 const roles = ["Admin", "Developer", "Designer", "QA", "Product"] as const;
 type Role = typeof roles[number];
 
-interface Member {
-  id: number;
-  name: string;
-  email: string;
-  role: Role;
-  status: "Activo" | "Inactivo" | "Vacaciones";
-  initials: string;
-  tasks: number;
-  joined: string;
-}
-
-const initialMembers: Member[] = [
-  { id: 1, name: "Ana García", email: "ana@devboard.io", role: "Admin", status: "Activo", initials: "AG", tasks: 12, joined: "2023-01-15" },
-  { id: 2, name: "Carlos López", email: "carlos@devboard.io", role: "Developer", status: "Activo", initials: "CL", tasks: 8, joined: "2023-03-20" },
-  { id: 3, name: "María Torres", email: "maria@devboard.io", role: "Designer", status: "Vacaciones", initials: "MT", tasks: 3, joined: "2023-05-10" },
-  { id: 4, name: "Luis Pérez", email: "luis@devboard.io", role: "Developer", status: "Activo", initials: "LP", tasks: 15, joined: "2022-11-08" },
-  { id: 5, name: "Sara Ruiz", email: "sara@devboard.io", role: "QA", status: "Activo", initials: "SR", tasks: 6, joined: "2023-07-01" },
-  { id: 6, name: "David Kim", email: "david@devboard.io", role: "Product", status: "Inactivo", initials: "DK", tasks: 0, joined: "2022-09-14" },
-];
+type Member = Database["public"]["Tables"]["members"]["Row"];
 
 const statusVariant: Record<string, "default" | "secondary" | "outline"> = {
   Activo: "default",
@@ -86,12 +70,32 @@ const statusVariant: Record<string, "default" | "secondary" | "outline"> = {
   Inactivo: "outline",
 };
 
+function getInitials(name: string) {
+  return name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+}
+
 export default function TeamPage() {
-  const [members, setMembers] = useState<Member[]>(initialMembers);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
   const [newMember, setNewMember] = useState({ name: "", email: "", role: "Developer" as Role });
+
+  useEffect(() => {
+    loadMembers();
+  }, []);
+
+  async function loadMembers() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("members")
+      .select("*")
+      .order("joined_at", { ascending: false });
+    if (error) toast.error("Error cargando miembros");
+    else setMembers(data ?? []);
+    setLoading(false);
+  }
 
   const filtered = members.filter(
     (m) =>
@@ -99,26 +103,38 @@ export default function TeamPage() {
       m.email.toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleAddMember = () => {
+  const handleAddMember = async () => {
     if (!newMember.name || !newMember.email) {
       toast.error("Completa todos los campos");
       return;
     }
-    const m: Member = {
-      id: Date.now(),
-      ...newMember,
-      status: "Activo",
-      initials: newMember.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase(),
-      tasks: 0,
-      joined: new Date().toISOString().split("T")[0],
-    };
-    setMembers((prev) => [...prev, m]);
+    const { data, error } = await supabase
+      .from("members")
+      .insert({
+        name: newMember.name,
+        email: newMember.email,
+        role: newMember.role,
+        status: "Activo",
+        tasks_count: 0,
+      })
+      .select()
+      .single();
+    if (error) {
+      toast.error("Error al agregar miembro");
+      return;
+    }
+    setMembers((prev) => [data, ...prev]);
     setNewMember({ name: "", email: "", role: "Developer" });
-    toast.success(`${m.name} agregado al equipo`);
+    toast.success(`${data.name} agregado al equipo`);
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = async (id: string) => {
     const m = members.find((m) => m.id === id);
+    const { error } = await supabase.from("members").delete().eq("id", id);
+    if (error) {
+      toast.error("Error al eliminar miembro");
+      return;
+    }
     setMembers((prev) => prev.filter((m) => m.id !== id));
     toast.success(`${m?.name} eliminado del equipo`);
   };
@@ -196,7 +212,7 @@ export default function TeamPage() {
                 </div>
                 <div className="grid gap-2">
                   <Label>Rol</Label>
-                  <Select value={newMember.role} onValueChange={(v) => setNewMember((p) => ({ ...p, role: v as Role }))}>
+                  <Select value={newMember.role} onValueChange={(v) => v && setNewMember((p) => ({ ...p, role: v as Role }))}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -241,58 +257,69 @@ export default function TeamPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map((member) => (
-              <TableRow key={member.id}>
-                <TableCell>
-                  <div className="flex items-center gap-3">
-                    <Avatar className="size-9">
-                      <AvatarImage src="" />
-                      <AvatarFallback>{member.initials}</AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <p className="font-medium text-sm">{member.name}</p>
-                      <p className="text-xs text-muted-foreground">{member.email}</p>
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="gap-1 text-xs">
-                    {member.role === "Admin" && <Shield className="size-3" />}
-                    {member.role}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={statusVariant[member.status]}>{member.status}</Badge>
-                </TableCell>
-                <TableCell className="text-right font-mono text-sm">{member.tasks}</TableCell>
-                <TableCell className="text-right text-sm text-muted-foreground">{member.joined}</TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon" className="size-8" />}>
-                      <MoreHorizontal className="size-4" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>Acciones</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={() => setSelectedMember(member)}>
-                        <Eye className="size-4 mr-2" /> Ver perfil
-                      </DropdownMenuItem>
-                      <DropdownMenuItem>
-                        <Edit className="size-4 mr-2" /> Editar
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive"
-                        onClick={() => setDeleteTarget(member)}
-                      >
-                        <Trash2 className="size-4 mr-2" /> Eliminar
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
-            {filtered.length === 0 && (
+            {loading
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton className="h-9 w-48" /></TableCell>
+                    <TableCell><Skeleton className="h-6 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-6 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-6 ml-auto" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
+                    <TableCell />
+                  </TableRow>
+                ))
+              : filtered.map((member) => (
+                  <TableRow key={member.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar className="size-9">
+                          <AvatarImage src="" />
+                          <AvatarFallback>{getInitials(member.name)}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="font-medium text-sm">{member.name}</p>
+                          <p className="text-xs text-muted-foreground">{member.email}</p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="gap-1 text-xs">
+                        {member.role === "Admin" && <Shield className="size-3" />}
+                        {member.role}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant[member.status] ?? "outline"}>{member.status}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{member.tasks_count}</TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{member.joined_at}</TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger render={<Button variant="ghost" size="icon" className="size-8" />}>
+                          <MoreHorizontal className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuLabel>Acciones</DropdownMenuLabel>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => setSelectedMember(member)}>
+                            <Eye className="size-4 mr-2" /> Ver perfil
+                          </DropdownMenuItem>
+                          <DropdownMenuItem>
+                            <Edit className="size-4 mr-2" /> Editar
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => setDeleteTarget(member)}
+                          >
+                            <Trash2 className="size-4 mr-2" /> Eliminar
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                ))}
+            {!loading && filtered.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                   No se encontraron miembros
@@ -314,17 +341,17 @@ export default function TeamPage() {
             <div className="px-4 pb-4 space-y-4">
               <div className="flex items-center gap-4">
                 <Avatar className="size-16">
-                  <AvatarFallback className="text-xl">{selectedMember.initials}</AvatarFallback>
+                  <AvatarFallback className="text-xl">{getInitials(selectedMember.name)}</AvatarFallback>
                 </Avatar>
                 <div className="space-y-1">
                   <h3 className="font-semibold text-lg">{selectedMember.name}</h3>
                   <Badge variant="outline">{selectedMember.role}</Badge>
-                  <Badge variant={statusVariant[selectedMember.status]} className="ml-1">{selectedMember.status}</Badge>
+                  <Badge variant={statusVariant[selectedMember.status] ?? "outline"} className="ml-1">{selectedMember.status}</Badge>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4 text-sm">
-                <div><span className="text-muted-foreground">Tareas activas</span><p className="font-bold text-lg">{selectedMember.tasks}</p></div>
-                <div><span className="text-muted-foreground">Miembro desde</span><p className="font-medium">{selectedMember.joined}</p></div>
+                <div><span className="text-muted-foreground">Tareas activas</span><p className="font-bold text-lg">{selectedMember.tasks_count}</p></div>
+                <div><span className="text-muted-foreground">Miembro desde</span><p className="font-medium">{selectedMember.joined_at}</p></div>
               </div>
             </div>
             <DrawerFooter>

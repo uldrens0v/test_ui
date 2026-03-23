@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Bell, CheckCheck, Trash2, Info, AlertTriangle, CheckCircle, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,29 +11,20 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatDistanceToNow } from "date-fns";
+import { es } from "date-fns/locale";
+import { supabase } from "@/lib/supabase";
+import type { Database } from "@/lib/database.types";
 
 type NotifType = "info" | "success" | "warning" | "message";
+type Notification = Database["public"]["Tables"]["notifications"]["Row"];
 
-interface Notification {
-  id: number;
-  type: NotifType;
-  title: string;
-  body: string;
-  time: string;
-  read: boolean;
-  initials: string;
+function getInitials(title: string) {
+  return title.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 }
-
-const initialNotifs: Notification[] = [
-  { id: 1, type: "message", title: "Carlos López", body: "PR #87 está listo para revisión", time: "5 min", read: false, initials: "CL" },
-  { id: 2, type: "warning", title: "Deploy fallido", body: "El pipeline de staging falló en el paso de tests", time: "23 min", read: false, initials: "CI" },
-  { id: 3, type: "success", title: "Deploy exitoso", body: "La versión 2.4.1 fue desplegada en producción", time: "1h", read: false, initials: "CD" },
-  { id: 4, type: "info", title: "Nuevo miembro", body: "Andrés Mora se unió al workspace", time: "3h", read: true, initials: "AM" },
-  { id: 5, type: "message", title: "Ana García", body: "¿Puedes revisar el diseño del onboarding?", time: "5h", read: true, initials: "AG" },
-  { id: 6, type: "success", title: "Tarea completada", body: "Luis Pérez cerró la tarea #42 «Migración de BD»", time: "1d", read: true, initials: "LP" },
-];
 
 const typeIcon: Record<NotifType, React.ReactNode> = {
   info: <Info className="size-4 text-blue-500" />,
@@ -43,7 +34,8 @@ const typeIcon: Record<NotifType, React.ReactNode> = {
 };
 
 export default function NotificationsPage() {
-  const [notifs, setNotifs] = useState<Notification[]>(initialNotifs);
+  const [notifs, setNotifs] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
   const [prefs, setPrefs] = useState({
     deploys: true,
     mentions: true,
@@ -52,15 +44,40 @@ export default function NotificationsPage() {
     weekly: false,
   });
 
+  useEffect(() => {
+    loadNotifications();
+  }, []);
+
+  async function loadNotifications() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) toast.error("Error cargando notificaciones");
+    else setNotifs(data ?? []);
+    setLoading(false);
+  }
+
   const unread = notifs.filter((n) => !n.read).length;
 
-  const markAll = () => {
+  const markAll = async () => {
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("read", false);
+    if (error) { toast.error("Error al marcar notificaciones"); return; }
     setNotifs((p) => p.map((n) => ({ ...n, read: true })));
     toast.success("Todas marcadas como leídas");
   };
 
-  const markRead = (id: number) => setNotifs((p) => p.map((n) => n.id === id ? { ...n, read: true } : n));
-  const deleteNotif = (id: number) => {
+  const markRead = async (id: string) => {
+    await supabase.from("notifications").update({ read: true }).eq("id", id);
+    setNotifs((p) => p.map((n) => n.id === id ? { ...n, read: true } : n));
+  };
+
+  const deleteNotif = async (id: string) => {
+    await supabase.from("notifications").delete().eq("id", id);
     setNotifs((p) => p.filter((n) => n.id !== id));
     toast("Notificación eliminada");
   };
@@ -119,38 +136,52 @@ export default function NotificationsPage() {
           <Card>
             <CardContent className="p-0">
               <ScrollArea className="h-[380px]">
-                {notifs.map((notif, i) => (
-                  <div key={notif.id}>
-                    <div
-                      className={`flex items-start gap-3 p-4 hover:bg-muted/50 transition-colors ${!notif.read ? "bg-muted/20" : ""}`}
-                    >
-                      <Avatar className="size-9 mt-0.5">
-                        <AvatarFallback className="text-xs">{notif.initials}</AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          {typeIcon[notif.type]}
-                          <p className="text-sm font-medium">{notif.title}</p>
-                          {!notif.read && <div className="size-2 rounded-full bg-primary ml-auto" />}
+                {loading ? (
+                  <div className="p-4 space-y-4">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="flex gap-3">
+                        <Skeleton className="size-9 rounded-full shrink-0" />
+                        <div className="flex-1 space-y-2">
+                          <Skeleton className="h-4 w-32" />
+                          <Skeleton className="h-3 w-full" />
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">{notif.body}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Hace {notif.time}</p>
                       </div>
-                      <div className="flex gap-1">
-                        {!notif.read && (
-                          <Button variant="ghost" size="icon" className="size-7" onClick={() => markRead(notif.id)}>
-                            <CheckCircle className="size-3.5" />
-                          </Button>
-                        )}
-                        <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => deleteNotif(notif.id)}>
-                          <Trash2 className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                    {i < notifs.length - 1 && <Separator />}
+                    ))}
                   </div>
-                ))}
-                {notifs.length === 0 && (
+                ) : (
+                  notifs.map((notif, i) => (
+                    <div key={notif.id}>
+                      <div className={`flex items-start gap-3 p-4 hover:bg-muted/50 transition-colors ${!notif.read ? "bg-muted/20" : ""}`}>
+                        <Avatar className="size-9 mt-0.5">
+                          <AvatarFallback className="text-xs">{getInitials(notif.title)}</AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            {typeIcon[notif.type as NotifType] ?? typeIcon.info}
+                            <p className="text-sm font-medium">{notif.title}</p>
+                            {!notif.read && <div className="size-2 rounded-full bg-primary ml-auto" />}
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5">{notif.body}</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Hace {formatDistanceToNow(new Date(notif.created_at), { locale: es })}
+                          </p>
+                        </div>
+                        <div className="flex gap-1">
+                          {!notif.read && (
+                            <Button variant="ghost" size="icon" className="size-7" onClick={() => markRead(notif.id)}>
+                              <CheckCircle className="size-3.5" />
+                            </Button>
+                          )}
+                          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => deleteNotif(notif.id)}>
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      {i < notifs.length - 1 && <Separator />}
+                    </div>
+                  ))
+                )}
+                {!loading && notifs.length === 0 && (
                   <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                     <Bell className="size-10 mb-2 opacity-30" />
                     <p className="text-sm">No hay notificaciones</p>
